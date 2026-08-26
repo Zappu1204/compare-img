@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">
+  <!-- Sample "before" image. The paired after.svg differs in exactly four
+       places, listed here so the diff view can be verified against a known
+       answer: the circle colour, the small square's position, the bar height,
+       and the presence of the star. -->
+  <rect width="800" height="500" fill="#1e2733"/>
+
+  <!-- Unchanged backdrop detail: gives the diff something to correctly ignore. -->
+  <g stroke="#2a3440" stroke-width="1">
+    <path d="M0 125h800M0 250h800M0 375h800"/>
+    <path d="M200 0v500M400 0v500M600 0v500"/>
+  </g>
+
+  <text x="40" y="60" font-family="sans-serif" font-size="26" font-weight="600" fill="#e8eef5">
+    Quarterly report
+  </text>
+  <text x="40" y="88" font-family="sans-serif" font-size="15" fill="#8fa3b8">
+    Revenue by region
+  </text>
+
+  <!-- DIFFERENCE 1: this circle is amber in the after image. -->
+  <circle cx="150" cy="200" r="52" fill="#4c9aff"/>
+
+  <!-- DIFFERENCE 2: this square shifts right and down in the after image. -->
+  <rect x="270" y="160" width="70" height="70" rx="6" fill="#4ec9a0"/>
+
+  <!-- Bars. DIFFERENCE 3: the third bar is taller in the after image. -->
+  <g fill="#5a6b7d">
+    <rect x="430" y="300" width="42" height="120"/>
+    <rect x="490" y="260" width="42" height="160"/>
+    <rect x="550" y="330" width="42" height="90"/>
+    <rect x="610" y="240" width="42" height="180"/>
+    <rect x="670" y="290" width="42" height="130"/>
+  </g>
+  <path d="M420 420h310" stroke="#8fa3b8" stroke-width="2" fill="none"/>
+
+  <!-- DIFFERENCE 4: the after image adds a star near this caption. -->
+  <text x="40" y="450" font-family="sans-serif" font-size="13" fill="#6b7f94">
+    Figure 1 — regional breakdown
+  </text>
+</svg>
