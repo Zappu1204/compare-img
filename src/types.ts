@@ -34,6 +34,21 @@ export type Channel = 'rgb' | 'r' | 'g' | 'b' | 'gray'
 export type DiffStyle = 'heat' | 'gray' | 'red'
 export type Slot = 'a' | 'b'
 
+/**
+ * How Image A is filtered when it is magnified past its native resolution.
+ *
+ * Only A needs this choice. It is the low-resolution baseline, so above 1:1 the
+ * browser must invent pixels: `pixelated` shows the true source grid for judging
+ * what the upscaler had to work from, `smooth` interpolates as other viewers do.
+ * B is the sharp reference and is always interpolated smoothly.
+ */
+export type BaselineFilter = 'smooth' | 'pixelated'
+
+export const BASELINE_FILTER_LABEL: Record<BaselineFilter, string> = {
+  smooth: 'Smooth',
+  pixelated: 'Pixels',
+}
+
 export const CHANNEL_LABEL: Record<Channel, string> = {
   rgb: 'RGB',
   r: 'R',
@@ -63,16 +78,29 @@ export interface LoadedImage {
 }
 
 /**
- * Images normalised for comparison: `b` is resampled to `a`'s exact dimensions
- * so that every mode can assume a 1:1 pixel correspondence.
+ * A pair ready to draw, with **both native buffers intact**.
+ *
+ * Nothing here is resampled. Alignment comes from mapping each image's own pixel
+ * grid onto one shared reference box instead of forcing both onto one grid, which
+ * is what lets a 500×500 original and a 4000×4000 upscale be compared with the
+ * upscale's real detail still present. See `drawLayer` for the mapping.
+ *
+ * `width`/`height` are that reference box — A's dimensions. They define what the
+ * transform's `scale` means (1.0 = A at 1:1) and therefore what the zoom presets
+ * mean; B renders at `scale * (bSize.width / width)`, so a 4× upscale draws at a
+ * quarter of the transform scale and lands in the identical screen rect.
  */
 export interface PreparedScene {
   a: ImageBitmap
   b: ImageBitmap
+  /** The shared reference box every layer is mapped into: A's native size. */
   width: number
   height: number
-  /** Set when B was resampled, for the "resampled to A" notice. */
-  resampledFrom: { width: number; height: number } | null
+  /** True native dimensions, for the info panel and per-image render scales. */
+  aSize: Size
+  bSize: Size
+  /** True when the two natives differ, so the UI can explain the mapping. */
+  mismatched: boolean
 }
 
 export interface Transform {
@@ -138,6 +166,8 @@ export interface Settings {
   channel: Channel
   showLabels: boolean
   checkerboard: boolean
+  /** Display filter for Image A when magnified past 1:1. */
+  baselineFilter: BaselineFilter
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -160,6 +190,7 @@ export const DEFAULT_SETTINGS: Settings = {
   channel: 'rgb',
   showLabels: true,
   checkerboard: false,
+  baselineFilter: 'smooth',
 }
 
 /**

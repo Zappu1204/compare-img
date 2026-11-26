@@ -92,6 +92,9 @@ export function paintScene(
     scene,
     layerA,
     layerB,
+    // Both layers map into this one box whatever their native resolutions, which
+    // is what makes the viewports align without resampling either image.
+    box: { width: prepared.width, height: prepared.height },
     viewport: scene.viewport,
     forExport,
   }

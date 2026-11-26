@@ -95,8 +95,10 @@ async function loadGenerated(specs) {
 }
 
 // --- item 3: mismatched dimensions ----------------------------------------
-// 1920x1080 and 1600x900 are both 16:9, so a correct resample lines the content
-// up exactly and any seam would be the app's own doing.
+// 1920x1080 and 1600x900 are both 16:9 and their content sits at the same
+// fractions of each frame, so a correct mapping lines it up exactly and any seam
+// would be the app's own doing. Note B is the *smaller* image here, which is the
+// case that catches a diff rule of "always compare on B's grid".
 await loadGenerated([
   { width: 1920, height: 1080, hue: 210 },
   { width: 1600, height: 900, hue: 150 },
@@ -109,20 +111,31 @@ check(
   sizes.filter((t) => /\d+×\d+/.test(t)).join(' / '),
 )
 
-const resampleNotice = await page
-  .getByText(/resampl/i)
-  .first()
+// The disclosure must state what the app actually does, and the check has to be
+// able to tell the two apart. `/resampl/i` cannot: it matched the old "B is
+// resampled to 1920x1080" notice and it equally matches the new "neither is
+// resampled" one, which asserts the opposite. So assert the substance — the
+// no-resample claim, and a render scale for each image.
+//
+// Read the containing block, not the matched element: `getByText` resolves to the
+// innermost node, which is the scales line alone, so the surrounding sentence
+// would be missing and the check would fail on correct UI.
+const notice = await page
+  .locator('aside div', { hasText: /render scale/i })
+  .last()
   .innerText()
   .catch(() => '')
+const flat = notice.replace(/\s+/g, ' ')
 check(
-  'the resample is disclosed in the UI',
-  /resampl/i.test(resampleNotice),
-  resampleNotice.replace(/\s+/g, ' ').slice(0, 90) || 'no notice found',
+  'the differing resolutions and per-image render scales are disclosed',
+  /neither is resampled/i.test(flat) && /A\s+\d+(\.\d+)?%/.test(flat) && /B\s+\d+(\.\d+)?%/.test(flat),
+  flat.slice(0, 110) || 'no notice found',
 )
 
-// Alignment: in split mode the shared grid lines must cross the divider without
-// a step. Sample a column each side of the divider and compare where the bright
-// horizontal lines fall.
+// Alignment: the two images must cross the divider without a step. This is now a
+// considerably stronger claim than when it was written: alignment no longer comes
+// from having resampled both onto one grid, but from mapping two different native
+// grids onto one shared box. A seam here would mean that mapping is wrong.
 await pressKey('1')
 await page.waitForTimeout(500)
 await page.screenshot({ path: `${OUT}/mismatch-split.png` })
@@ -181,7 +194,7 @@ const seam = await page.evaluate(() => {
   return { ok: paired >= 3, left: left.length, right: right.length, paired, maxShift }
 })
 check(
-  'resampled pair aligns across the divider with no seam',
+  'mismatched pair aligns across the divider with no seam',
   seam.ok && seam.maxShift <= 2,
   seam.maxShift === null
     ? `found ${seam.left} lines left vs ${seam.right} right`
@@ -266,8 +279,9 @@ if (!viewDownload) {
   )
 }
 
-// Diff export must be full base resolution (A is 1920x1080 here), regardless of
-// the current zoom.
+// Diff export must be at the finer native grid (A is 1920x1080 here, B is
+// 1600x900), regardless of the current zoom. The diff runs on whichever grid is
+// finer so that neither image is downsampled, and the export inherits that.
 await pressKey('4')
 await page.waitForTimeout(1400)
 // Match the export button exactly. A loose /diff/i matches the *mode* button
@@ -289,9 +303,9 @@ if (!diffDownload) {
   const w = png.readUInt32BE(16)
   const h = png.readUInt32BE(20)
   check(
-    'exported diff is full base resolution, not viewport resolution',
+    'exported diff is at the finer of the two native grids, not viewport resolution',
     w === 1920 && h === 1080,
-    `${w}x${h} (base is 1920x1080, viewport is 1440x~830)`,
+    `${w}x${h} (natives are 1920x1080 and 1600x900, viewport is 1440x~830)`,
   )
 }
 

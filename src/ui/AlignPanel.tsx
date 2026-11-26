@@ -1,4 +1,9 @@
-import { CHANNEL_LABEL, type Channel } from '../types'
+import {
+  BASELINE_FILTER_LABEL,
+  CHANNEL_LABEL,
+  type BaselineFilter,
+  type Channel,
+} from '../types'
 import { useStore } from '../state/store'
 import { Field, Panel, Row, SegmentedControl } from './primitives'
 
@@ -91,6 +96,29 @@ export function AlignPanel() {
                     : `Isolate the ${CHANNEL_LABEL[value]} channel as brightness`,
             }))}
           />
+        </div>
+
+        <div className="space-y-1">
+          <span className="block text-[11px] font-medium tracking-wide text-ink-dim uppercase">
+            Baseline A above 100%
+          </span>
+          <SegmentedControl<BaselineFilter>
+            label="Image A display filter"
+            value={settings.baselineFilter}
+            onChange={(baselineFilter) => patch({ baselineFilter })}
+            options={(['smooth', 'pixelated'] as BaselineFilter[]).map((value) => ({
+              value,
+              label: BASELINE_FILTER_LABEL[value],
+              title:
+                value === 'smooth'
+                  ? 'Interpolate A when magnified, as most image viewers do'
+                  : "Nearest-neighbour: show A's true pixel grid",
+            }))}
+          />
+          <p className="text-[10px] leading-snug text-ink-faint">
+            Only affects A, and only past its native size. B is always
+            interpolated smoothly.
+          </p>
         </div>
 
         <div className="space-y-1.5 border-t border-line pt-2.5">

@@ -1,4 +1,5 @@
 import { MODE_LABEL, MODE_ORDER, type CompareMode } from '../types'
+import { formatScale } from '../core/util'
 import { useStore } from '../state/store'
 import { IconButton } from './primitives'
 
@@ -144,12 +145,6 @@ export function Toolbar({
       </div>
     </header>
   )
-}
-
-function formatScale(scale: number): string {
-  if (scale >= 10) return `${Math.round(scale * 100)}%`
-  if (scale >= 1) return `${(scale * 100).toFixed(0)}%`
-  return `${(scale * 100).toFixed(1)}%`
 }
 
 // --- icons: 14px line art, matching the toolbar's weight ------------------

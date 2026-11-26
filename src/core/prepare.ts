@@ -1,37 +1,44 @@
 import type { Channel, LoadedImage, PreparedScene } from '../types'
 
 /**
- * Normalise a pair for comparison: A keeps its native size, B is resampled to
- * match it exactly. Every mode can then assume a 1:1 pixel correspondence,
- * which is what makes split/fade/diff align without per-mode special cases.
+ * Pair two images for comparison **without resampling either one**.
  *
- * Note the trade-off: resampling B introduces interpolation along edges, which
- * shows up as low-level noise in the difference view. `resampledFrom` is kept
- * so the UI can say so rather than letting it look like a real difference.
+ * This is the resolution-independent path. Both native buffers are kept exactly
+ * as decoded; alignment comes from mapping each image's pixel grid onto one
+ * shared reference box at draw time (see `drawLayer`), not from forcing both onto
+ * a single grid.
+ *
+ * The earlier design resampled B into A's dimensions here. That made every mode
+ * trivially aligned, but at a cost that defeats the tool's purpose: comparing a
+ * 500×500 original against a 2000×2000 upscale destroyed the upscale's detail
+ * before it could ever be seen. Measured directly — a 2px checker in B, which
+ * cannot exist at 500×500, arrived on screen as flat grey. The thing the user is
+ * trying to evaluate was the thing being thrown away.
+ *
+ * Preparation is now pure bookkeeping, so it cannot fail and costs nothing.
  */
 export async function prepareScene(a: LoadedImage, b: LoadedImage): Promise<PreparedScene> {
-  const sameSize = a.width === b.width && a.height === b.height
-  if (sameSize) {
-    return {
-      a: a.bitmap,
-      b: b.bitmap,
-      width: a.width,
-      height: a.height,
-      resampledFrom: null,
-    }
-  }
-
-  const resampled = await resample(b.bitmap, a.width, a.height)
   return {
     a: a.bitmap,
-    b: resampled,
+    b: b.bitmap,
+    // The reference box is A's size: it defines what transform scale 1.0 means,
+    // so "100%" keeps meaning "A at 1:1" and the zoom presets are unchanged.
     width: a.width,
     height: a.height,
-    resampledFrom: { width: b.width, height: b.height },
+    aSize: { width: a.width, height: a.height },
+    bSize: { width: b.width, height: b.height },
+    mismatched: a.width !== b.width || a.height !== b.height,
   }
 }
 
-async function resample(
+/**
+ * Resample a bitmap to an exact size.
+ *
+ * Not used for display — the display path keeps native buffers. This exists for
+ * the difference engine, which cannot compare two different pixel grids and so
+ * needs one of them projected onto the other. See `DiffEngine.setScene`.
+ */
+export async function resample(
   source: ImageBitmap,
   width: number,
   height: number,
@@ -45,9 +52,13 @@ async function resample(
   return canvas.transferToImageBitmap()
 }
 
-/** Identity for the layer cache: rebuild only when the pair or channel changes. */
+/**
+ * Identity for the layer cache. Both native sizes take part: a pair can change
+ * to one with the same reference box but a different B, and the cached layers
+ * would otherwise be reused for the wrong image.
+ */
 export function layerCacheKey(scene: PreparedScene, channel: Channel): string {
-  return `${scene.width}x${scene.height}:${channel}`
+  return `${scene.aSize.width}x${scene.aSize.height}:${scene.bSize.width}x${scene.bSize.height}:${channel}`
 }
 
 /**

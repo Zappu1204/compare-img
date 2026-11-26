@@ -6,8 +6,19 @@ import { Panel, SegmentedControl, Slider } from './primitives'
 /** Controls for whichever comparison mode is active. */
 export function ModePanel() {
   const { state, patch } = useStore()
-  const { settings } = state
+  const { settings, images } = state
   const { mode } = settings
+  const mismatched = Boolean(
+    images.a && images.b && (images.a.width !== images.b.width || images.a.height !== images.b.height),
+  )
+  // Must mirror `DiffEngine.upload`'s choice: the finer grid, so neither image is
+  // downsampled. Stating "B's grid" here would be wrong whenever B is smaller.
+  const diffGrid =
+    images.a && images.b
+      ? images.b.width * images.b.height >= images.a.width * images.a.height
+        ? { width: images.b.width, height: images.b.height }
+        : { width: images.a.width, height: images.a.height }
+      : null
 
   return (
     <Panel title={MODE_LABEL[mode]}>
@@ -105,6 +116,14 @@ export function ModePanel() {
             />
           </LabelledRow>
           {settings.diffStyle === 'heat' && <HeatLegend />}
+          {mismatched && (
+            <p className="rounded border border-line bg-surface-2 px-2 py-1.5 text-[10px] leading-snug text-ink-dim">
+              Sizes differ, and a difference needs one pixel grid. Both are
+              projected onto the finer of the two — {diffGrid!.width}×
+              {diffGrid!.height} — so neither is downsampled and detail that
+              exists in only one of them registers as a difference.
+            </p>
+          )}
         </div>
       )}
 

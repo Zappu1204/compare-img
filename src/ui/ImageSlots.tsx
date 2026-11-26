@@ -1,6 +1,6 @@
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ACCEPT_ATTR } from '../core/imageLoader'
-import { formatAspect, formatBytes, shortenName } from '../core/util'
+import { formatAspect, formatBytes, formatScale, shortenName } from '../core/util'
 import { useStore } from '../state/store'
 import type { LoadedImage, Slot } from '../types'
 import { Panel } from './primitives'
@@ -22,13 +22,60 @@ export function ImageSlots({
         <SlotCard slot="a" image={images.a} onPick={onPick} />
         <SlotCard slot="b" image={images.b} onPick={onPick} />
       </div>
-      {mismatch && (
-        <p className="mt-2 rounded border border-warn/30 bg-warn/10 px-2 py-1.5 text-[10px] leading-snug text-warn">
-          B is resampled to {images.a!.width}×{images.a!.height} so the two align. Edges may
-          show faint resampling noise in the difference view.
-        </p>
-      )}
+      {mismatch && <RenderScales a={images.a!} b={images.b!} />}
     </Panel>
+  )
+}
+
+/**
+ * What the resolution-independent path is actually doing, stated plainly.
+ *
+ * This replaces a notice that claimed B was resampled into A's grid — true of
+ * the old design, and the very thing that destroyed an upscale's detail before
+ * anyone could look at it. Nothing is resampled now, so the useful disclosure is
+ * the asymmetry: both images fill one screen box, so each is drawn at its own
+ * render scale. Seeing "A 400% · B 100%" tells the user why A looks soft and
+ * blocky while B looks sharp — that difference is the measurement, not an
+ * artefact of the viewer.
+ */
+function RenderScales({ a, b }: { a: LoadedImage; b: LoadedImage }) {
+  const { sceneRef } = useStore()
+  const [scale, setScale] = useState(1)
+
+  // Poll rather than subscribe: pan and zoom deliberately bypass React, so a
+  // per-frame read is the cheap way to stay current. `setState` with an equal
+  // value is a no-op, so a still viewport costs no re-renders.
+  useEffect(() => {
+    let frame = 0
+    const tick = () => {
+      const next = sceneRef.current.transform.scale
+      setScale((prev) => (Math.abs(prev - next) < 0.0005 ? prev : next))
+      frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(frame)
+  }, [sceneRef])
+
+  // The reference box is A's size, so A renders at the transform scale itself
+  // and B at that scale times its own resolution ratio.
+  const aScale = scale
+  const bScale = scale * (a.width / b.width)
+
+  return (
+    <div className="mt-2 space-y-1 rounded border border-line bg-surface-2 px-2 py-1.5 text-[10px] leading-snug">
+      <p className="text-ink-dim">
+        Different resolutions. Both kept at full native size and mapped to one
+        shared viewport — neither is resampled.
+      </p>
+      <p className="font-mono text-ink tabular-nums">
+        Render scale · A {formatScale(aScale)} · B {formatScale(bScale)}
+      </p>
+      <p className="text-ink-faint">
+        {bScale < aScale
+          ? 'A is magnified past its native pixels; B still has detail in reserve.'
+          : 'Both are drawn near their native density.'}
+      </p>
+    </div>
   )
 }
 

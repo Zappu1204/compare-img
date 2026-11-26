@@ -1,6 +1,7 @@
-import type { Point, Rect, Scene, Size, Transform } from '../types'
+import type { BaselineFilter, Point, Rect, Scene, Size, Transform } from '../types'
 import { pickMip, type MipChain } from './mip'
 import { fitToViewport } from './transform'
+import { formatScale } from './util'
 
 /**
  * Drawing primitives and the six mode renderers.
@@ -20,9 +21,35 @@ export interface DrawContext {
   /** Layer A after channel isolation; falls back to the prepared bitmap. */
   layerA: ImageBitmap
   layerB: ImageBitmap
+  /** The shared reference box both layers are mapped into. */
+  box: Size
   viewport: Size
   /** True while rendering for export, so we can skip cursor-driven overlays. */
   forExport: boolean
+}
+
+/**
+ * Draw one of the two layers, choosing its display filter from *which image it
+ * is* rather than where it is being drawn.
+ *
+ * Deciding by identity matters because `holdSwap` exchanges A and B in every
+ * mode. If the filter were chosen by draw position, holding Space would move the
+ * baseline filter onto the high-resolution image and vice versa — the toggle
+ * would appear to invert itself.
+ *
+ * A gets the user's baseline filter: it is the low-resolution image, so above 1:1
+ * the browser has to invent pixels and the user needs a say in how. B is always
+ * smooth, being the sharp reference whose detail is the thing under judgement.
+ */
+function draw(
+  dc: DrawContext,
+  bitmap: ImageBitmap,
+  t: Transform,
+  offsetX = 0,
+  offsetY = 0,
+): void {
+  const filter: BaselineFilter = bitmap === dc.layerA ? dc.scene.settings.baselineFilter : 'smooth'
+  drawLayer(dc.ctx, bitmap, t, dc.box, offsetX, offsetY, filter)
 }
 
 /**
@@ -43,30 +70,74 @@ export function unregisterMip(chain: MipChain | null): void {
   if (chain) mips.delete(chain.source)
 }
 
-/** Draw a bitmap under a transform, optionally shifted in image space. */
+/**
+ * Draw a bitmap so it fills the reference box, whatever its native resolution.
+ *
+ * This is where resolution independence lives. `box` is the shared reference
+ * (A's dimensions) and the transform maps that box to the screen, so the
+ * destination rect is identical for every layer:
+ *
+ *     screen = box * t.scale + t.translate
+ *
+ * Each bitmap reaches that rect through its *own* render scale, `fit`, which
+ * converts its native pixels into reference pixels. A 500-wide original gets
+ * fit = 1 and is magnified by the transform alone, revealing its real pixel grid.
+ * A 2000-wide upscale of the same frame gets fit = 0.25 and is drawn at a quarter
+ * of the transform scale — same screen rect, four times the detail. Neither
+ * buffer is resampled in memory, which is the whole point.
+ *
+ * A normalized point u in [0,1] therefore lands on `u * bitmap.width` in either
+ * image, because both map the same unit square onto the same rect. That is what
+ * keeps the divider, the lens and the panes aligned across resolutions without
+ * any per-mode special casing.
+ *
+ * `offsetX/Y` are in reference space, so calibration nudges mean the same visual
+ * distance regardless of which image is being shifted.
+ */
 export function drawLayer(
   ctx: CanvasRenderingContext2D,
   bitmap: ImageBitmap,
   t: Transform,
+  box: Size,
   offsetX = 0,
   offsetY = 0,
+  filter: BaselineFilter | 'auto' = 'auto',
 ): void {
-  // When zoomed out, draw a pre-downscaled copy instead of asking the browser to
-  // resample the full-resolution bitmap every frame. Measured on a 4000x3000
-  // image at fit scale that is the difference between ~24ms and ~0.02ms per draw.
-  const mip = pickMip(mips.get(bitmap) ?? null, bitmap, t.scale)
+  // Native px -> reference px. 1 when the bitmap already matches the box.
+  const fit = box.width / bitmap.width
+  // The scale this bitmap is actually drawn at on screen, which is what decides
+  // whether a downscaled copy helps and which level to pick. Using the raw
+  // transform scale here would pick a level too coarse for an upscale (fit < 1)
+  // and skip mips entirely for a downscale.
+  const effective = t.scale * fit
+  const mip = pickMip(mips.get(bitmap) ?? null, bitmap, effective)
 
-  // Nearest-neighbour above 1:1 so pixel inspection shows real pixels rather
-  // than interpolation; smooth below it to keep downscaled previews clean.
-  ctx.imageSmoothingEnabled = t.scale < 1
+  // Below 1:1 always smooth, so downscaled previews stay clean. Above it the
+  // caller decides: `pixelated` for inspecting a baseline's true pixel grid,
+  // `smooth` for ordinary viewing. `auto` keeps the historical behaviour of
+  // nearest-neighbour above 1:1.
+  ctx.imageSmoothingEnabled =
+    effective < 1 || (filter !== 'auto' && filter === 'smooth')
   ctx.imageSmoothingQuality = 'high'
   ctx.drawImage(
     mip.bitmap,
-    // The offset is in *source* image space, so it scales by the transform's
-    // scale — not the mip's, which is relative to a smaller bitmap.
+    // The offset is in reference space, so it scales by the transform's scale —
+    // not the mip's, which is relative to a smaller bitmap.
     t.tx + offsetX * t.scale,
     t.ty + offsetY * t.scale,
+    // `effective` already folds in `fit`, and `pickMip` returns a scale relative
+    // to whichever level it chose such that `level.width * mip.scale` equals
+    // `bitmap.width * effective`. So this is exactly `box.width * t.scale` — the
+    // same destination rect for every layer — with no further correction.
+    //
+    // Applying `fit` a second time here was a real defect, and a quiet one: it
+    // drew B at fit² instead of fit, so a 4x upscale landed at a quarter of its
+    // correct size in the top-left corner while A filled the viewport. Nothing
+    // looked broken, because the visible image was simply A.
     mip.bitmap.width * mip.scale,
+    // Height follows the bitmap's own aspect ratio rather than being forced to
+    // the box, so a pair with genuinely different aspect ratios shows that
+    // difference instead of hiding it behind a stretch.
     mip.bitmap.height * mip.scale,
   )
 }
@@ -182,8 +253,8 @@ export function renderSplit(dc: DrawContext): void {
     ? [{ x: offsetX, y: offsetY }, { x: 0, y: 0 }]
     : [{ x: 0, y: 0 }, { x: offsetX, y: offsetY }]
 
-  withClip(ctx, first, () => drawLayer(ctx, near, scene.transform, nearOff.x, nearOff.y))
-  withClip(ctx, second, () => drawLayer(ctx, far, scene.transform, farOff.x, farOff.y))
+  withClip(ctx, first, () => draw(dc, near, scene.transform, nearOff.x, nearOff.y))
+  withClip(ctx, second, () => draw(dc, far, scene.transform, farOff.x, farOff.y))
 
   // The divider is drawn on the canvas, not in the DOM, so exports match.
   ctx.save()
@@ -333,9 +404,9 @@ export function renderSideBySide(dc: DrawContext): void {
     }
     withClip(ctx, pane, () => {
       if (scene.settings.checkerboard) {
-        drawCheckerboard(ctx, imageScreenRect(local, layer))
+        drawCheckerboard(ctx, imageScreenRect(local, dc.box))
       }
-      drawLayer(ctx, layer, local, off.x, off.y)
+      draw(dc, layer, local, off.x, off.y)
     })
   }
 
@@ -372,11 +443,11 @@ export function renderFade(dc: DrawContext): void {
   // Space-hold jumps to the far end of the fade.
   const alpha = scene.holdSwap ? 1 - opacity : opacity
 
-  drawLayer(ctx, layerA, scene.transform)
+  draw(dc, layerA, scene.transform)
   if (alpha > 0) {
     ctx.save()
     ctx.globalAlpha = alpha
-    drawLayer(ctx, layerB, scene.transform, offsetX, offsetY)
+    draw(dc, layerB, scene.transform, offsetX, offsetY)
     ctx.restore()
   }
 
@@ -397,12 +468,14 @@ export function renderDiff(dc: DrawContext): void {
     // viewport never flashes empty on entering the mode.
     ctx.save()
     ctx.globalAlpha = 0.25
-    drawLayer(ctx, layerA, scene.transform)
+    draw(dc, layerA, scene.transform)
     ctx.restore()
     return
   }
-  // The diff map is already in A's pixel space and has the offset baked in.
-  drawLayer(ctx, diff.bitmap, scene.transform)
+  // The diff map has the offset baked in and covers the whole frame, so it maps
+  // onto the reference box like any other layer. Its own resolution is whichever
+  // grid the comparison ran on, which `drawLayer` accounts for via `fit`.
+  drawLayer(ctx, diff.bitmap, scene.transform, dc.box, 0, 0, 'smooth')
 }
 
 // ---------------------------------------------------------------------------
@@ -416,9 +489,9 @@ export function renderFlicker(dc: DrawContext): void {
   const showB = scene.holdSwap ? !scene.flickerShowB : scene.flickerShowB
 
   if (showB) {
-    drawLayer(ctx, layerB, scene.transform, offsetX, offsetY)
+    draw(dc, layerB, scene.transform, offsetX, offsetY)
   } else {
-    drawLayer(ctx, layerA, scene.transform)
+    draw(dc, layerA, scene.transform)
   }
 
   if (showLabels) {
@@ -447,7 +520,7 @@ export function renderSpyglass(dc: DrawContext): void {
   const baseOff = scene.holdSwap ? { x: offsetX, y: offsetY } : { x: 0, y: 0 }
   const lensOff = scene.holdSwap ? { x: 0, y: 0 } : { x: offsetX, y: offsetY }
 
-  drawLayer(ctx, base, scene.transform, baseOff.x, baseOff.y)
+  draw(dc, base, scene.transform, baseOff.x, baseOff.y)
 
   // With no cursor (touch idle, or an export) park the lens at the centre so
   // the mode is never blank.
@@ -470,7 +543,12 @@ export function renderSpyglass(dc: DrawContext): void {
   // Dark backing so the lens reads as a distinct surface over the base image.
   ctx.fillStyle = '#121212'
   ctx.fill()
-  drawLayer(ctx, lens, magnified, lensOff.x, lensOff.y)
+  // The lens samples the alternate image from its *native* buffer at
+  // scale * lensZoom * fit. With a high-resolution B that is where its real
+  // detail appears — the reason the spec asks for the lens to project B "at full
+  // optical sharpness", and something the old shared-grid design could not do
+  // because B had already been resampled down to A's resolution at load.
+  draw(dc, lens, magnified, lensOff.x, lensOff.y)
   ctx.restore()
 
   ctx.save()
@@ -495,9 +573,14 @@ export function renderSpyglass(dc: DrawContext): void {
     // convention that a corner label describes the pixels beneath it. What the
     // lens shows is named on the lens itself, so the two are never confused.
     drawLabel(ctx, scene.holdSwap ? 'After' : 'Before', 14, 22)
+    // Report magnification relative to the lens image's *own* pixels, not the
+    // reference box. On a high-resolution B, "2×" of the box can still be below
+    // B's native 1:1 — the user needs to know whether they are looking at real
+    // pixels or interpolation, and lensZoom alone cannot tell them.
+    const native = magnified.scale * (dc.box.width / lens.width)
     drawLabel(
       ctx,
-      `${scene.holdSwap ? 'Before' : 'After'} · ${lensZoom.toFixed(1)}×`,
+      `${scene.holdSwap ? 'Before' : 'After'} · ${lensZoom.toFixed(1)}× · ${formatScale(native)} native`,
       centre.x,
       centre.y + lensRadius + 18,
       'centre',

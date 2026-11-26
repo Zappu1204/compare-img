@@ -52,21 +52,31 @@ export async function exportDiff(scene: Scene): Promise<void> {
   downloadBlob(blob, timestampedName('diff'))
 }
 
-/** Export both source images stacked, at full resolution. */
+/**
+ * Export both source images side by side, each at its own full native
+ * resolution.
+ *
+ * The canvas is sized to fit both natives rather than assuming one shared grid,
+ * so a 500x500 original beside a 2000x2000 upscale exports as 2516x2000 with
+ * every pixel of each image intact. Resampling either one to match the other
+ * would defeat the purpose of the export. Images are top-aligned and the shorter
+ * one leaves workspace grey below it.
+ */
 export async function exportPair(scene: Scene): Promise<void> {
   const prepared = scene.prepared
   if (!prepared) throw new Error('Load both images first')
 
+  const { aSize, bSize } = prepared
   const gap = 16
   const canvas = document.createElement('canvas')
-  canvas.width = prepared.width * 2 + gap
-  canvas.height = prepared.height
+  canvas.width = aSize.width + gap + bSize.width
+  canvas.height = Math.max(aSize.height, bSize.height)
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Could not create a 2D drawing context')
   ctx.fillStyle = '#121212'
   ctx.fillRect(0, 0, canvas.width, canvas.height)
   ctx.drawImage(prepared.a, 0, 0)
-  ctx.drawImage(prepared.b, prepared.width + gap, 0)
+  ctx.drawImage(prepared.b, aSize.width + gap, 0)
 
   const blob = await toBlob(canvas)
   downloadBlob(blob, timestampedName('pair'))

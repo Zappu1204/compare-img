@@ -38,6 +38,20 @@ export function formatPercent(value: number, digits = 0): string {
   return `${(value * 100).toFixed(digits)}%`
 }
 
+/**
+ * A scale factor as a compact percentage: 0.25 -> "25%", 4 -> "400%".
+ *
+ * Precision follows magnitude rather than being fixed, because render scales now
+ * span a wide range — a 500x500 baseline beside an 8K upscale puts one image at
+ * 1600% while the other sits at 6.3%, and both readouts have to stay legible in
+ * the same narrow panel.
+ */
+export function formatScale(scale: number): string {
+  if (scale >= 10) return `${Math.round(scale * 100)}%`
+  if (scale >= 1) return `${(scale * 100).toFixed(0)}%`
+  return `${(scale * 100).toFixed(scale < 0.1 ? 1 : 0)}%`
+}
+
 /** Compact count: 1234567 -> "1.23M". Keeps the diff readout narrow. */
 export function formatCount(n: number): string {
   if (n < 1000) return String(n)

@@ -81,7 +81,9 @@ export function Workspace({
           b: only.bitmap,
           width: only.width,
           height: only.height,
-          resampledFrom: null,
+          aSize: { width: only.width, height: only.height },
+          bSize: { width: only.width, height: only.height },
+          mismatched: false,
         }
         scene.prepared = single
         scene.layers = null

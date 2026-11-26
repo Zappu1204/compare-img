@@ -1,5 +1,5 @@
 import type { DiffResult, DiffSettings, DiffStats, PreparedScene } from '../../types'
-import { readPixels } from '../prepare'
+import { readPixels, resample } from '../prepare'
 import DiffWorker from './diffWorker?worker'
 
 type WorkerResponse =
@@ -23,6 +23,8 @@ export class DiffEngine {
   private inFlight = 0
   private pending: DiffSettings | null = null
   private latest: DiffResult | null = null
+  /** True once the worker holds this scene's pixels and can serve `compute`. */
+  private ready = false
   private onResult: (result: DiffResult | null) => void
   private onError: (message: string) => void
 
@@ -40,9 +42,13 @@ export class DiffEngine {
 
   /** Point the engine at a pair of images. No-op if already loaded. */
   setScene(scene: PreparedScene | null): void {
-    const key = scene ? `${scene.width}x${scene.height}:${identity(scene)}` : ''
+    const key = scene
+      ? `${scene.aSize.width}x${scene.aSize.height}:` +
+        `${scene.bSize.width}x${scene.bSize.height}:${identity(scene)}`
+      : ''
     if (key === this.sceneKey) return
     this.sceneKey = key
+    this.ready = false
     this.dropResult()
 
     if (!scene) {
@@ -50,21 +56,76 @@ export class DiffEngine {
       return
     }
 
+    void this.upload(scene, key)
+  }
+
+  /**
+   * Get both images onto one pixel grid and hand them to the worker.
+   *
+   * Differencing is the one operation that genuinely cannot be
+   * resolution-independent: it needs pixel i of A to correspond to pixel i of B.
+   * So this is the only place a resample survives, and the rule is that it only
+   * ever goes **upwards** — the coarser image is projected onto the finer grid,
+   * never the reverse.
+   *
+   * Usually that means A onto B's grid, the upscale-inspection case: detail that
+   * exists only in the upscale then registers as a difference, which is what such
+   * a tool should report. Comparing on A's grid instead would average that detail
+   * away and pronounce the upscale identical to its own blurred source.
+   *
+   * But "always B's grid" is the wrong generalisation, and picking it was a real
+   * defect: when B is the *smaller* image (1920x1080 vs 1600x900), it downscales A
+   * and throws away pixels that genuinely exist — the precise harm this whole
+   * module was built to prevent, reintroduced at the last step. Choosing by area
+   * keeps the principle rather than the special case, and also makes the diff
+   * export land at the finer resolution either way.
+   *
+   * The cost is that worker memory scales with the larger image: a 500x500 vs 8K
+   * pair is ~132MB per buffer. That is the accepted trade for reporting the truth.
+   */
+  private async upload(scene: PreparedScene, key: string): Promise<void> {
     try {
+      const { aSize, bSize } = scene
+      // Compare on whichever grid is finer, so neither image is ever downsampled.
+      const grid = bSize.width * bSize.height >= aSize.width * aSize.height ? bSize : aSize
+      const { width, height } = grid
+      const [projectedA, projectedB] = await Promise.all([
+        aSize.width === width && aSize.height === height
+          ? scene.a
+          : resample(scene.a, width, height),
+        bSize.width === width && bSize.height === height
+          ? scene.b
+          : resample(scene.b, width, height),
+      ])
+
+      // The resample yields to the event loop, so the pair may have changed
+      // underneath us. Drop the work rather than uploading the wrong images.
+      if (this.sceneKey !== key) {
+        if (projectedA !== scene.a) projectedA.close()
+        if (projectedB !== scene.b) projectedB.close()
+        return
+      }
+
       this.ensureWorker()
-      const a = readPixels(scene.a)
-      const b = readPixels(scene.b)
+      const a = readPixels(projectedA)
+      const b = readPixels(projectedB)
+      if (projectedA !== scene.a) projectedA.close()
+      if (projectedB !== scene.b) projectedB.close()
+
       // Transfer the buffers: they are not needed on this thread again.
       this.worker!.postMessage(
-        {
-          type: 'init',
-          a: a.data.buffer,
-          b: b.data.buffer,
-          width: scene.width,
-          height: scene.height,
-        },
+        { type: 'init', a: a.data.buffer, b: b.data.buffer, width, height },
         [a.data.buffer, b.data.buffer],
       )
+      this.ready = true
+
+      // A request that arrived while the pixels were being prepared is held, not
+      // dropped, because the worker ignores `compute` before `init`.
+      if (this.pending && this.inFlight === 0) {
+        const next = this.pending
+        this.pending = null
+        this.dispatch(next)
+      }
     } catch (error) {
       this.onError(error instanceof Error ? error.message : 'Could not read image pixels')
     }
@@ -72,10 +133,10 @@ export class DiffEngine {
 
   /** Request a diff. Safe to call on every slider tick. */
   request(settings: DiffSettings): void {
-    if (!this.worker) return
-    if (this.inFlight > 0) {
-      // Keep only the newest request; intermediate slider values are stale.
-      this.pending = settings
+    // Queue while the pixels are still being prepared, or while a job is out;
+    // in both cases only the newest request is worth keeping.
+    if (!this.ready || this.inFlight > 0) {
+      if (this.sceneKey !== '') this.pending = settings
       return
     }
     this.dispatch(settings)
@@ -133,13 +194,15 @@ export class DiffEngine {
     this.worker?.terminate()
     this.worker = null
     this.sceneKey = ''
+    this.ready = false
   }
 }
 
 /**
- * ImageBitmaps have no stable id, so combine dimensions with the resample
- * marker. Together with the fact that a new pair always yields new bitmap
- * objects, this is enough to detect a scene change.
+ * ImageBitmaps have no stable id, so combine both native sizes with a per-object
+ * counter. Together with the fact that a new pair always yields a new
+ * `PreparedScene` object, this is enough to detect a scene change — including a
+ * swap, where the sizes trade places but the pair is genuinely different.
  */
 let sceneCounter = 0
 const sceneIds = new WeakMap<object, number>()
